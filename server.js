@@ -14,8 +14,49 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROMPT_FILE_PATH = path.join(__dirname, "prompt.txt");
 
+/**
+ * Structured logger with ISO/local timestamps (PM2 friendly)
+ */
+const logger = {
+  getTimestamp() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return `${date} ${time}`;
+  },
+  info(msg, ...args) {
+    console.log(`[${this.getTimestamp()}] [INFO] ${msg}`, ...args);
+  },
+  warn(msg, ...args) {
+    console.warn(`[${this.getTimestamp()}] [WARN] ${msg}`, ...args);
+  },
+  error(msg, ...args) {
+    console.error(`[${this.getTimestamp()}] [ERROR] ${msg}`, ...args);
+  },
+  http(msg, ...args) {
+    console.log(`[${this.getTimestamp()}] [HTTP] ${msg}`, ...args);
+  },
+};
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// HTTP request logger middleware (logs response status, duration, and IP)
+app.use((req, res, next) => {
+  const start = Date.now();
+  const clientIp =
+    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "local";
+
+  res.on("finish", () => {
+    const duration = ((Date.now() - start) / 1000).toFixed(2);
+    logger.http(
+      `${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}s) [${clientIp}]`
+    );
+  });
+
+  next();
+});
 
 // Middleware (allow large payloads for base64 images)
 app.use(cors());
@@ -471,20 +512,35 @@ app.post("/api/extract", async (req, res) => {
     // Send 1 page at a time with controlled concurrency and combine results into a single JSON
     if (imageUrls.length > 1) {
       const concurrencyLimit = Math.max(1, parseInt(concurrency, 10) || 3);
-      console.log(
-        `Processing multi-page document: ${imageUrls.length} pages (Concurrency: ${concurrencyLimit}, Model: ${selectedModel})...`
+      logger.info(
+        `Multi-page document detected: ${imageUrls.length} pages (Concurrency: ${concurrencyLimit}, Model: ${selectedModel})`
       );
 
       const pageResults = await processWithConcurrency(
         imageUrls,
         concurrencyLimit,
-        (url, idx) => {
-          console.log(`Processing page ${idx + 1}/${imageUrls.length}...`);
-          return extractSinglePage(url, idx, systemPrompt, selectedModel, {
-            thinking,
-            reasoning_effort,
-            rawText,
-          });
+        async (url, idx) => {
+          const pageStart = Date.now();
+          logger.info(`[Page ${idx + 1}/${imageUrls.length}] Processing...`);
+          const res = await extractSinglePage(
+            url,
+            idx,
+            systemPrompt,
+            selectedModel,
+            {
+              thinking,
+              reasoning_effort,
+              rawText,
+            }
+          );
+          const pageDuration = ((Date.now() - pageStart) / 1000).toFixed(2);
+          const batchInfo = res.data?.batchNumber
+            ? ` (Batch #${res.data.batchNumber})`
+            : "";
+          logger.info(
+            `[Page ${idx + 1}/${imageUrls.length}] Done in ${pageDuration}s${batchInfo}`
+          );
+          return res;
         }
       );
 
@@ -508,6 +564,10 @@ app.post("/api/extract", async (req, res) => {
         .filter((r) => !r.success || !r.data)
         .map((r) => ({ page: r.page, error: r.error || "Extraction failed" }));
 
+      logger.info(
+        `Extraction complete: ${combinedReports.length}/${imageUrls.length} reports successfully extracted (Total tokens: ${totalUsage.total_tokens || 0})`
+      );
+
       const responsePayload = {
         success: combinedReports.length > 0,
         isPdf,
@@ -530,8 +590,8 @@ app.post("/api/extract", async (req, res) => {
 
     // Case 2: Single page / Single image
     if (imageUrls.length === 1) {
-      console.log(
-        `Processing single page (Model: ${selectedModel}, IsPDF: ${isPdf})...`
+      logger.info(
+        `Single page document detected (Model: ${selectedModel}, IsPDF: ${isPdf})`
       );
 
       const singleResult = await extractSinglePage(
@@ -545,6 +605,11 @@ app.post("/api/extract", async (req, res) => {
           rawText,
         }
       );
+
+      const batchInfo = singleResult.data?.batchNumber
+        ? ` (Batch #${singleResult.data.batchNumber})`
+        : "";
+      logger.info(`Single page extraction completed${batchInfo}`);
 
       const responsePayload = {
         success: singleResult.success,
@@ -570,8 +635,8 @@ app.post("/api/extract", async (req, res) => {
     }
 
     // Case 3: Text-only input
-    console.log(
-      `Processing text-only invoice extraction with model: ${selectedModel}...`
+    logger.info(
+      `Text-only extraction requested with model: ${selectedModel}`
     );
 
     const completionParams = {
@@ -613,7 +678,7 @@ app.post("/api/extract", async (req, res) => {
 
     return res.json(responsePayload);
   } catch (error) {
-    console.error("Extraction error:", error);
+    logger.error("Extraction error:", error.message || error);
     const statusCode = error.status || 500;
     return res.status(statusCode).json({
       success: false,
@@ -627,30 +692,47 @@ app.post("/api/extract", async (req, res) => {
 // Root route
 app.get("/", (req, res) => {
   res.send(`
-    <h2>GST Invoice Data Extraction API</h2>
-    <p>Server is running. Supports text, single images, and multi-page PDFs (auto-converted to images and analyzed simultaneously via DeepSeek).</p>
+    <h2>GST Invoice & Batch Report OCR API</h2>
+    <p>Server is running. Supports text, single images, and multi-page PDFs (auto-converted to images and analyzed via DeepSeek).</p>
     <ul>
       <li><strong>GET /health</strong> - Server health status & engine check</li>
       <li><strong>GET /api/prompt</strong> - View loaded system prompt</li>
       <li><strong>POST /api/convert-pdf</strong> - Convert PDF to PNG images (preview pages)</li>
-      <li><strong>POST /api/extract</strong> - Extract structured invoice JSON (accepts <code>pdfPath</code>, <code>filePath</code>, <code>imagePath</code>, <code>pdfBase64</code>, <code>imageBase64</code>, or <code>text</code>)</li>
+      <li><strong>POST /api/extract</strong> - Extract structured JSON (accepts <code>pdfPath</code>, <code>filePath</code>, <code>imagePath</code>, <code>pdfBase64</code>, <code>imageBase64</code>, or <code>text</code>)</li>
     </ul>
   `);
 });
 
 // Start server
 const server = app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-  console.log(`DeepSeek BaseURL: ${openai.baseURL}`);
-  console.log(`Prompt file path: ${PROMPT_FILE_PATH}`);
+  logger.info(`Server listening on http://localhost:${PORT} (PID: ${process.pid})`);
+  logger.info(`DeepSeek BaseURL: ${openai.baseURL}`);
+  logger.info(`Prompt file path: ${PROMPT_FILE_PATH}`);
   if (
     !process.env.DEEPSEEK_API_KEY ||
     process.env.DEEPSEEK_API_KEY === "your_deepseek_api_key_here"
   ) {
-    console.warn("⚠️  WARNING: DEEPSEEK_API_KEY is not set in .env.");
+    logger.warn("⚠️  WARNING: DEEPSEEK_API_KEY is not set in .env.");
   } else {
-    console.log("DeepSeek API Key is configured.");
+    logger.info("DeepSeek API Key is configured.");
   }
 });
+
+// Graceful shutdown handlers for PM2 / Docker / systemd
+function handleShutdown(signal) {
+  logger.info(`Received ${signal}. Shutting down HTTP server gracefully...`);
+  server.close(() => {
+    logger.info("HTTP server closed. Exiting process.");
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    logger.error("Forced exit after shutdown timeout.");
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("SIGINT", () => handleShutdown("SIGINT"));
 
 export default app;

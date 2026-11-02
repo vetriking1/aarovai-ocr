@@ -7,6 +7,11 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "prod": "pm2 start server.js --name ocr-ai",
+    "stop": "pm2 stop ocr-ai",
+    "restart": "pm2 restart ocr-ai",
+    "logs": "pm2 logs ocr-ai",
+    "status": "pm2 status",
     "test:pdf": "node test_pdf_runner.js"
   },
   "keywords": [
