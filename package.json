@@ -1,0 +1,25 @@
+{
+  "name": "ocr-ai",
+  "version": "1.0.0",
+  "description": "Express server for Indian GST invoice extraction using DeepSeek via OpenAI SDK",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "express",
+    "deepseek",
+    "invoice-extraction",
+    "ocr"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "openai": "^7.15.0"
+  }
+}

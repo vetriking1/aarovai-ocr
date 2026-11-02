@@ -1,0 +1,60 @@
+{
+  "success": true,
+  "data": {
+    "supplier": {
+      "name": "CHETTINAD CEMENT CORPORATION PRIVATE LIMITED",
+      "gstin": "37AAACC3130A1Z1",
+      "address": "Dachepalli Mandal, Pedagarilapadu Village, Guntur, Andhra Pradesh, 522431",
+      "state": "Andhra Pradesh",
+      "stateCode": "37"
+    },
+    "invoice": {
+      "invoiceNumber": "DW20177893",
+      "invoiceDate": "2026-09-07",
+      "poNumber": "1",
+      "placeOfSupply": "33 - Tamil Nadu",
+      "vehicleNumber": "TN01BR8326"
+    },
+    "lineItems": [
+      {
+        "description": "OPC 53 - LOOSE (CEMENT) - BULK",
+        "hsnSacCode": "25232910",
+        "quantity": 34.6,
+        "unit": "MT",
+        "rate": 4406.78,
+        "taxableValue": 152474.58,
+        "cgstPercent": 0,
+        "cgstAmount": 0,
+        "sgstPercent": 0,
+        "sgstAmount": 0,
+        "igstPercent": 18,
+        "igstAmount": 27445.42,
+        "cessAmount": 0
+      }
+    ],
+    "taxSummary": {
+      "totalTaxableValue": 152474.58,
+      "totalCgst": 0,
+      "totalSgst": 0,
+      "totalIgst": 27445.42,
+      "totalCess": 0,
+      "totalGst": 27445.42,
+      "roundOff": 0,
+      "grandTotal": 179920
+    }
+  },
+  "raw": "```json\n{\n  \"supplier\": {\n    \"name\": \"CHETTINAD CEMENT CORPORATION PRIVATE LIMITED\",\n    \"gstin\": \"37AAACC3130A1Z1\",\n    \"address\": \"Dachepalli Mandal, Pedagarilapadu Village, Guntur, Andhra Pradesh, 522431\",\n    \"state\": \"Andhra Pradesh\",\n    \"stateCode\": \"37\"\n  },\n  \"invoice\": {\n    \"invoiceNumber\": \"DW20177893\",\n    \"invoiceDate\": \"2026-09-07\",\n    \"poNumber\": \"1\",\n    \"placeOfSupply\": \"33 - Tamil Nadu\",\n    \"vehicleNumber\": \"TN01BR8326\"\n  },\n  \"lineItems\": [\n    {\n      \"description\": \"OPC 53 - LOOSE (CEMENT) - BULK\",\n      \"hsnSacCode\": \"25232910\",\n      \"quantity\": 34.6,\n      \"unit\": \"MT\",\n      \"rate\": 4406.78,\n      \"taxableValue\": 152474.58,\n      \"cgstPercent\": 0,\n      \"cgstAmount\": 0,\n      \"sgstPercent\": 0,\n      \"sgstAmount\": 0,\n      \"igstPercent\": 18,\n      \"igstAmount\": 27445.42,\n      \"cessAmount\": 0\n    }\n  ],\n  \"taxSummary\": {\n    \"totalTaxableValue\": 152474.58,\n    \"totalCgst\": 0,\n    \"totalSgst\": 0,\n    \"totalIgst\": 27445.42,\n    \"totalCess\": 0,\n    \"totalGst\": 27445.42,\n    \"roundOff\": 0,\n    \"grandTotal\": 179920.0\n  }\n}\n```",
+  "usage": {
+    "prompt_tokens": 1360,
+    "completion_tokens": 1286,
+    "total_tokens": 2646,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 885
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 1360
+  }
+}
