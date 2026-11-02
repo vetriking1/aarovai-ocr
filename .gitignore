@@ -1,2 +1,48 @@
+# Dependencies
 node_modules/
+/.pnp
+.pnp.js
+
+# Environment variables & secrets
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.backup
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Test and run outputs
+output_*.json
+temp/
+tmp/
+
+# Editor directories & files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+test_images/
+test_pdf/
+output/

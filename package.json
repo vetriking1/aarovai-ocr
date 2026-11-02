@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test:pdf": "node test_pdf_runner.js"
   },
   "keywords": [
     "express",
@@ -20,6 +21,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "mupdf": "^1.28.1",
     "openai": "^7.15.0"
   }
 }

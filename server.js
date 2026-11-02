@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import * as mupdf from "mupdf";
 
 // Load environment variables from .env
 dotenv.config();
@@ -23,29 +24,71 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Initialize OpenAI client with DeepSeek baseURL
 const openai = new OpenAI({
-  baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+  baseURL: "https://api.deepseek.com",
   apiKey: process.env.DEEPSEEK_API_KEY,
 });
 
 /**
- * Reads system prompt from prompt.txt dynamically
+ * Reads system prompt from prompt.txt dynamically.
+ * Throws a 500 exception if prompt.txt cannot be found or read.
  */
 function getSystemPrompt() {
-  try {
-    if (fs.existsSync(PROMPT_FILE_PATH)) {
-      return fs.readFileSync(PROMPT_FILE_PATH, "utf-8").trim();
-    }
-  } catch (err) {
-    console.error("Error reading prompt.txt:", err.message);
+  if (!fs.existsSync(PROMPT_FILE_PATH)) {
+    const err = new Error(`System prompt file not found: ${PROMPT_FILE_PATH}`);
+    err.status = 500;
+    throw err;
   }
-  return "You are an expert invoice data extraction AI. Extract structured data from Indian GST invoices. Return ONLY valid JSON, no markdown or explanation.";
+  try {
+    return fs.readFileSync(PROMPT_FILE_PATH, "utf-8").trim();
+  } catch (readErr) {
+    const err = new Error(`Failed to read prompt file: ${readErr.message}`);
+    err.status = 500;
+    throw err;
+  }
+}
+
+/**
+ * Checks if a buffer begins with PDF magic bytes (%PDF)
+ */
+function isPdfBuffer(buffer) {
+  if (!buffer || buffer.length < 4) return false;
+  return buffer.subarray(0, 4).toString("ascii") === "%PDF";
+}
+
+/**
+ * Converts a PDF buffer into an array of base64 PNG data URLs (one per page)
+ * @param {Buffer|Uint8Array} pdfBuffer
+ * @param {number} scale Rendering scale factor (default 2.0 = ~150-200 DPI)
+ * @returns {string[]} Array of data URLs (data:image/png;base64,...)
+ */
+function convertPdfBufferToImages(pdfBuffer, scale = 2.0) {
+  const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+  const numPages = doc.countPages();
+  const imageUrls = [];
+
+  for (let i = 0; i < numPages; i++) {
+    const page = doc.loadPage(i);
+    const transform = mupdf.Matrix.scale(scale, scale);
+    const pixmap = page.toPixmap(
+      transform,
+      mupdf.ColorSpace.DeviceRGB,
+      false,
+      true
+    );
+    const pngBuffer = Buffer.from(pixmap.asPNG());
+    imageUrls.push(`data:image/png;base64,${pngBuffer.toString("base64")}`);
+  }
+
+  return imageUrls;
 }
 
 /**
  * Converts a file path to base64 data URL
  */
 function fileToDataUrl(filePath) {
-  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
+  const resolvedPath = path.isAbsolute(filePath)
+    ? filePath
+    : path.join(__dirname, filePath);
   if (!fs.existsSync(resolvedPath)) {
     throw new Error(`File not found at path: ${resolvedPath}`);
   }
@@ -68,11 +111,124 @@ function fileToDataUrl(filePath) {
 function normalizeImageUrl(imageInput) {
   if (!imageInput) return null;
   const trimmed = imageInput.trim();
-  if (trimmed.startsWith("data:") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+  if (
+    trimmed.startsWith("data:") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://")
+  ) {
     return trimmed;
   }
   // Assume raw base64 jpeg by default
   return `data:image/jpeg;base64,${trimmed}`;
+}
+
+/**
+ * Resolves images from request payload.
+ * Supports:
+ * - Single/Multi-page PDF file paths (`pdfPath`, `filePath`, `imagePath`)
+ * - PDF base64 / data URL (`pdf`, `pdfBase64`, `file`, `fileBase64`, `image`, `imageBase64`)
+ * - Image paths or base64 strings
+ * - Arrays of images/files (`images`, `files`)
+ * Returns array of image data URLs ready for OpenAI vision API.
+ */
+function resolveImagesFromRequest(body, defaultScale = 2.0) {
+  const scale = typeof body.scale === "number" ? body.scale : defaultScale;
+  const resultImages = [];
+  let isPdfDetected = false;
+
+  // 1. Check file path inputs: pdfPath, filePath, or imagePath
+  const filePathInput = body.pdfPath || body.filePath || body.imagePath;
+  if (filePathInput && typeof filePathInput === "string") {
+    const resolvedPath = path.isAbsolute(filePathInput)
+      ? filePathInput
+      : path.join(__dirname, filePathInput);
+
+    if (!fs.existsSync(resolvedPath)) {
+      throw new Error(`File not found at path: ${resolvedPath}`);
+    }
+
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const fileBuffer = fs.readFileSync(resolvedPath);
+
+    if (ext === ".pdf" || isPdfBuffer(fileBuffer)) {
+      isPdfDetected = true;
+      const pdfImages = convertPdfBufferToImages(fileBuffer, scale);
+      resultImages.push(...pdfImages);
+    } else {
+      resultImages.push(fileToDataUrl(resolvedPath));
+    }
+  }
+
+  // 2. Check inline base64 / data URL: pdf, pdfBase64, file, fileBase64, image, imageBase64
+  const inlineInput =
+    body.pdf ||
+    body.pdfBase64 ||
+    body.file ||
+    body.fileBase64 ||
+    body.image ||
+    body.imageBase64;
+  if (inlineInput && typeof inlineInput === "string") {
+    const trimmed = inlineInput.trim();
+    if (trimmed.startsWith("data:application/pdf")) {
+      isPdfDetected = true;
+      const base64Part = trimmed.split(",")[1] || "";
+      const buf = Buffer.from(base64Part, "base64");
+      resultImages.push(...convertPdfBufferToImages(buf, scale));
+    } else if (trimmed.startsWith("JVBERi0") || trimmed.startsWith("%PDF")) {
+      // Raw PDF base64 or ASCII
+      isPdfDetected = true;
+      const buf = trimmed.startsWith("%PDF")
+        ? Buffer.from(trimmed)
+        : Buffer.from(trimmed, "base64");
+      resultImages.push(...convertPdfBufferToImages(buf, scale));
+    } else {
+      const normalized = normalizeImageUrl(trimmed);
+      if (normalized) {
+        resultImages.push(normalized);
+      }
+    }
+  }
+
+  // 3. Check array inputs: images or files
+  const listInput = body.images || body.files;
+  if (Array.isArray(listInput)) {
+    for (const item of listInput) {
+      if (typeof item === "string") {
+        const resolvedPath = path.isAbsolute(item)
+          ? item
+          : path.join(__dirname, item);
+        if (fs.existsSync(resolvedPath)) {
+          const ext = path.extname(resolvedPath).toLowerCase();
+          const buf = fs.readFileSync(resolvedPath);
+          if (ext === ".pdf" || isPdfBuffer(buf)) {
+            isPdfDetected = true;
+            resultImages.push(...convertPdfBufferToImages(buf, scale));
+          } else {
+            resultImages.push(fileToDataUrl(resolvedPath));
+          }
+        } else if (
+          item.startsWith("data:application/pdf") ||
+          item.startsWith("JVBERi0")
+        ) {
+          isPdfDetected = true;
+          const base64Part = item.startsWith("data:application/pdf")
+            ? item.split(",")[1]
+            : item;
+          const buf = Buffer.from(base64Part, "base64");
+          resultImages.push(...convertPdfBufferToImages(buf, scale));
+        } else {
+          const normalized = normalizeImageUrl(item);
+          if (normalized) resultImages.push(normalized);
+        }
+      }
+    }
+  }
+
+  return {
+    imageUrls: resultImages,
+    isPdf: isPdfDetected,
+    pageCount: resultImages.length,
+  };
 }
 
 /**
@@ -113,11 +269,95 @@ function extractJsonFromContent(content) {
   return null;
 }
 
+/**
+ * Executes async tasks over an array with controlled concurrency
+ */
+async function processWithConcurrency(items, concurrency, workerFn) {
+  const results = new Array(items.length);
+  let currentIndex = 0;
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (currentIndex < items.length) {
+        const idx = currentIndex++;
+        try {
+          results[idx] = await workerFn(items[idx], idx);
+        } catch (err) {
+          results[idx] = {
+            page: idx + 1,
+            success: false,
+            error: err.message || "Failed to process page",
+            data: null,
+          };
+        }
+      }
+    }
+  );
+
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Extracts data from a single image using the LLM
+ */
+async function extractSinglePage(
+  imageUrl,
+  pageIndex,
+  systemPrompt,
+  selectedModel,
+  options = {}
+) {
+  const userMessageContent = [
+    {
+      type: "text",
+      text:
+        options.rawText ||
+        "Extract structured data from this batch report according to the system instructions.",
+    },
+    {
+      type: "image_url",
+      image_url: {
+        url: imageUrl,
+      },
+    },
+  ];
+
+  const completionParams = {
+    model: selectedModel,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessageContent },
+    ],
+    stream: false,
+  };
+
+  if (options.thinking !== undefined) {
+    completionParams.thinking = options.thinking;
+  }
+  if (options.reasoning_effort !== undefined) {
+    completionParams.reasoning_effort = options.reasoning_effort;
+  }
+
+  const completion = await openai.chat.completions.create(completionParams);
+  const messageContent = completion.choices[0]?.message?.content || "";
+  const parsedData = extractJsonFromContent(messageContent);
+
+  return {
+    page: pageIndex + 1,
+    success: Boolean(parsedData),
+    data: parsedData,
+    raw: messageContent,
+    usage: completion.usage || null,
+  };
+}
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   const isKeyConfigured = Boolean(
     process.env.DEEPSEEK_API_KEY &&
-    process.env.DEEPSEEK_API_KEY !== "your_deepseek_api_key_here"
+      process.env.DEEPSEEK_API_KEY !== "your_deepseek_api_key_here"
   );
 
   res.json({
@@ -125,49 +365,98 @@ app.get("/health", (req, res) => {
     apiKeyConfigured: isKeyConfigured,
     model: process.env.DEEPSEEK_MODEL || "deepseek-flash",
     promptFileLoaded: fs.existsSync(PROMPT_FILE_PATH),
+    pdfEngine: "mupdf",
   });
 });
 
 // View current system prompt
 app.get("/api/prompt", (req, res) => {
-  res.json({ prompt: getSystemPrompt() });
+  try {
+    res.json({ prompt: getSystemPrompt() });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message,
+    });
+  }
 });
 
-// Primary extraction endpoint (supports both text and images)
+// Utility endpoint: Convert a PDF to PNG images (useful for previewing or debugging pages)
+app.post("/api/convert-pdf", (req, res) => {
+  try {
+    const { imageUrls, isPdf, pageCount } = resolveImagesFromRequest(req.body);
+    if (pageCount === 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "No PDF file or valid pages found. Provide 'pdfPath', 'filePath', or 'pdfBase64'.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      pageCount,
+      isPdf,
+      images: imageUrls,
+    });
+  } catch (error) {
+    console.error("PDF conversion error:", error);
+    return res.status(400).json({
+      success: false,
+      error: error.message || "Failed to convert PDF.",
+    });
+  }
+});
+
+// Primary extraction endpoint (supports PDF, multiple pages, images, and text)
 app.post("/api/extract", async (req, res) => {
+  // Allow long timeout for large multi-page batch bundles (e.g., 10 to 50 pages)
+  req.setTimeout(600000);
+
   try {
     const {
       text,
       invoiceText,
       content,
-      image,
-      imageBase64,
-      imagePath,
       model,
       prompt,
       thinking,
       reasoning_effort,
+      concurrency,
     } = req.body;
 
     const rawText = text || invoiceText || content;
 
-    // Resolve image URL if provided
-    let finalImageUrl = null;
-    if (imagePath) {
-      finalImageUrl = fileToDataUrl(imagePath);
-    } else if (image || imageBase64) {
-      finalImageUrl = normalizeImageUrl(image || imageBase64);
-    }
+    // Resolve images/PDF pages
+    let imageUrls = [];
+    let isPdf = false;
+    let pageCount = 0;
 
-    // Require either image or text input
-    if (!rawText && !finalImageUrl) {
+    try {
+      const resolved = resolveImagesFromRequest(req.body);
+      imageUrls = resolved.imageUrls;
+      isPdf = resolved.isPdf;
+      pageCount = resolved.pageCount;
+    } catch (resolveErr) {
       return res.status(400).json({
         success: false,
-        error: "Missing required input. Provide 'image', 'imageBase64', 'imagePath', or 'text' in the request body.",
+        error: resolveErr.message,
       });
     }
 
-    if (!process.env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY === "your_deepseek_api_key_here") {
+    // Require either image/PDF or text input
+    if (!rawText && imageUrls.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Missing required input. Provide 'pdfPath', 'filePath', 'imagePath', 'image', 'imageBase64', 'pdfBase64', or 'text' in the request body.",
+      });
+    }
+
+    if (
+      !process.env.DEEPSEEK_API_KEY ||
+      process.env.DEEPSEEK_API_KEY === "your_deepseek_api_key_here"
+    ) {
       return res.status(500).json({
         success: false,
         error: "DEEPSEEK_API_KEY is not configured in .env file.",
@@ -175,32 +464,121 @@ app.post("/api/extract", async (req, res) => {
     }
 
     const systemPrompt = prompt || getSystemPrompt();
-    const selectedModel = model || process.env.DEEPSEEK_MODEL || "deepseek-flash";
+    const selectedModel =
+      model || process.env.DEEPSEEK_MODEL || "deepseek-flash";
 
-    // Build user message content based on input type
-    let userMessageContent;
-    if (finalImageUrl) {
-      userMessageContent = [
-        {
-          type: "text",
-          text: rawText || "Extract structured data from this Indian GST invoice according to the system instructions.",
+    // Case 1: Multiple pages (PDF with 2, 10, 50 pages or multiple images)
+    // Send 1 page at a time with controlled concurrency and combine results into a single JSON
+    if (imageUrls.length > 1) {
+      const concurrencyLimit = Math.max(1, parseInt(concurrency, 10) || 3);
+      console.log(
+        `Processing multi-page document: ${imageUrls.length} pages (Concurrency: ${concurrencyLimit}, Model: ${selectedModel})...`
+      );
+
+      const pageResults = await processWithConcurrency(
+        imageUrls,
+        concurrencyLimit,
+        (url, idx) => {
+          console.log(`Processing page ${idx + 1}/${imageUrls.length}...`);
+          return extractSinglePage(url, idx, systemPrompt, selectedModel, {
+            thinking,
+            reasoning_effort,
+            rawText,
+          });
+        }
+      );
+
+      const combinedReports = pageResults
+        .filter((r) => r.success && r.data)
+        .map((r) => r.data);
+
+      const totalUsage = pageResults.reduce(
+        (acc, r) => {
+          if (r.usage) {
+            acc.prompt_tokens += r.usage.prompt_tokens || 0;
+            acc.completion_tokens += r.usage.completion_tokens || 0;
+            acc.total_tokens += r.usage.total_tokens || 0;
+          }
+          return acc;
         },
-        {
-          type: "image_url",
-          image_url: {
-            url: finalImageUrl,
-          },
-        },
-      ];
-    } else {
-      userMessageContent = rawText;
+        { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+      );
+
+      const failed = pageResults
+        .filter((r) => !r.success || !r.data)
+        .map((r) => ({ page: r.page, error: r.error || "Extraction failed" }));
+
+      const responsePayload = {
+        success: combinedReports.length > 0,
+        isPdf,
+        pageCount: imageUrls.length,
+        totalReports: combinedReports.length,
+        data: combinedReports, // Lean array of extracted reports
+        usage: totalUsage,
+      };
+
+      if (failed.length > 0) {
+        responsePayload.failed = failed;
+      }
+
+      if (req.body.includeRaw || req.query?.includeRaw === "true") {
+        responsePayload.raw = pageResults.map((r) => r.raw);
+      }
+
+      return res.json(responsePayload);
     }
+
+    // Case 2: Single page / Single image
+    if (imageUrls.length === 1) {
+      console.log(
+        `Processing single page (Model: ${selectedModel}, IsPDF: ${isPdf})...`
+      );
+
+      const singleResult = await extractSinglePage(
+        imageUrls[0],
+        0,
+        systemPrompt,
+        selectedModel,
+        {
+          thinking,
+          reasoning_effort,
+          rawText,
+        }
+      );
+
+      const responsePayload = {
+        success: singleResult.success,
+        isPdf,
+        pageCount: 1,
+        totalReports: singleResult.data ? 1 : 0,
+        data: singleResult.data, // Single clean JSON object
+      };
+
+      if (singleResult.usage) {
+        responsePayload.usage = {
+          prompt_tokens: singleResult.usage.prompt_tokens || 0,
+          completion_tokens: singleResult.usage.completion_tokens || 0,
+          total_tokens: singleResult.usage.total_tokens || 0,
+        };
+      }
+
+      if (req.body.includeRaw || req.query?.includeRaw === "true") {
+        responsePayload.raw = singleResult.raw;
+      }
+
+      return res.json(responsePayload);
+    }
+
+    // Case 3: Text-only input
+    console.log(
+      `Processing text-only invoice extraction with model: ${selectedModel}...`
+    );
 
     const completionParams = {
       model: selectedModel,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userMessageContent },
+        { role: "user", content: rawText },
       ],
       stream: false,
     };
@@ -212,25 +590,35 @@ app.post("/api/extract", async (req, res) => {
       completionParams.reasoning_effort = reasoning_effort;
     }
 
-    console.log(`Processing invoice extraction with model: ${selectedModel} (Image: ${Boolean(finalImageUrl)})...`);
-
     const completion = await openai.chat.completions.create(completionParams);
-
     const messageContent = completion.choices[0]?.message?.content || "";
     const parsedData = extractJsonFromContent(messageContent);
 
-    return res.json({
-      success: true,
+    const responsePayload = {
+      success: Boolean(parsedData),
       data: parsedData,
-      raw: messageContent,
-      usage: completion.usage || null,
-    });
+    };
+
+    if (completion.usage) {
+      responsePayload.usage = {
+        prompt_tokens: completion.usage.prompt_tokens || 0,
+        completion_tokens: completion.usage.completion_tokens || 0,
+        total_tokens: completion.usage.total_tokens || 0,
+      };
+    }
+
+    if (req.body.includeRaw || req.query?.includeRaw === "true") {
+      responsePayload.raw = messageContent;
+    }
+
+    return res.json(responsePayload);
   } catch (error) {
     console.error("Extraction error:", error);
     const statusCode = error.status || 500;
     return res.status(statusCode).json({
       success: false,
-      error: error.message || "An error occurred while processing with DeepSeek.",
+      error:
+        error.message || "An error occurred while processing with DeepSeek.",
       details: error.response?.data || error.error || null,
     });
   }
@@ -240,11 +628,12 @@ app.post("/api/extract", async (req, res) => {
 app.get("/", (req, res) => {
   res.send(`
     <h2>GST Invoice Data Extraction API</h2>
-    <p>Server is running. Supports both text and image invoice extraction via DeepSeek.</p>
+    <p>Server is running. Supports text, single images, and multi-page PDFs (auto-converted to images and analyzed simultaneously via DeepSeek).</p>
     <ul>
-      <li><strong>GET /health</strong> - Server health status</li>
+      <li><strong>GET /health</strong> - Server health status & engine check</li>
       <li><strong>GET /api/prompt</strong> - View loaded system prompt</li>
-      <li><strong>POST /api/extract</strong> - Extract structured invoice JSON (accepts <code>image</code>, <code>imagePath</code>, or <code>text</code>)</li>
+      <li><strong>POST /api/convert-pdf</strong> - Convert PDF to PNG images (preview pages)</li>
+      <li><strong>POST /api/extract</strong> - Extract structured invoice JSON (accepts <code>pdfPath</code>, <code>filePath</code>, <code>imagePath</code>, <code>pdfBase64</code>, <code>imageBase64</code>, or <code>text</code>)</li>
     </ul>
   `);
 });
@@ -254,7 +643,10 @@ const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
   console.log(`DeepSeek BaseURL: ${openai.baseURL}`);
   console.log(`Prompt file path: ${PROMPT_FILE_PATH}`);
-  if (!process.env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY === "your_deepseek_api_key_here") {
+  if (
+    !process.env.DEEPSEEK_API_KEY ||
+    process.env.DEEPSEEK_API_KEY === "your_deepseek_api_key_here"
+  ) {
     console.warn("⚠️  WARNING: DEEPSEEK_API_KEY is not set in .env.");
   } else {
     console.log("DeepSeek API Key is configured.");
