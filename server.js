@@ -371,12 +371,11 @@ async function extractSinglePage(
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessageContent },
     ],
+    // Turn off thinking tokens by default for instant 3s OCR extraction
+    thinking: options.thinking !== undefined ? options.thinking : { type: "disabled" },
     stream: false,
   };
 
-  if (options.thinking !== undefined) {
-    completionParams.thinking = options.thinking;
-  }
   if (options.reasoning_effort !== undefined) {
     completionParams.reasoning_effort = options.reasoning_effort;
   }
@@ -645,12 +644,10 @@ app.post("/api/extract", async (req, res) => {
         { role: "system", content: systemPrompt },
         { role: "user", content: rawText },
       ],
+      thinking: thinking !== undefined ? thinking : { type: "disabled" },
       stream: false,
     };
 
-    if (thinking !== undefined) {
-      completionParams.thinking = thinking;
-    }
     if (reasoning_effort !== undefined) {
       completionParams.reasoning_effort = reasoning_effort;
     }
