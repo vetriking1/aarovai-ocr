@@ -38,6 +38,53 @@ Return a JSON object with this exact structure:
   }
 }
 
+HEADER FIELDS (find each by its printed label, never by color or page position):
+- plantName: the bold title at the very top of the page (above "MCI 370 Control System"), exactly as printed
+- batchDate: value next to "Batch Date"
+- batchStartTime: value next to "Batch Start Time"
+- batchEndTime: value next to "Batch End Time"
+- plantSerialNumber: value next to "Plant Serial Number"
+- batchNumber: value next to "Batch Number"
+- orderNumber: value next to "Order Number". It can be text (e.g. "AAROV INFRA") or a number, so always return a string
+- orderedQuantity: value next to "Ordered Quantity" (unit M³)
+- customer: value next to "Customer"
+- productionQuantity: value next to "Production Quantity" (unit M³)
+- adjManualQuantity: value next to "Adj/Manual Quantity" (unit M³)
+- recipeCode: value next to "Recipe Code"
+- withThisLoad: value next to "With This Load" (unit M³)
+- mixerCapacity: value next to "Mixer Capacity" (unit M³)
+- recipeName: value next to "Recipe Name"
+- batcherName: value next to "Batcher Name"
+- batchSize: value next to "Batch Size" (unit M³)
+- truckNumber: value next to "Truck Number", exactly as printed (uppercase, do not add or remove spaces)
+- truckDriver: value next to "Truck Driver". If it is "-" or blank, return null
+- weighbridgeNetWtKg: value next to "Weighbridge Net Wt" (number only, unit kg)
+- site: value next to "Site"
+- Labels and values can be far apart or appear on different lines. Match each value to its own label carefully. Several fields may legitimately share the same text (e.g. Order Number, Customer and Site can all read "AAROV INFRA")
+
+TOTAL ACTUAL ROW (totalActualKg):
+- Use ONLY the row below the label "Total Actual in Kgs."
+- Do NOT extract: Recipe Targets, any per-mix rows, "Total Set Weight in Kgs.", "Total Bal. Wtr" or "Variations in %." Do not put them in the output
+- That row has 14 numbers. Map them by POSITION, left to right, to the material header columns:
+  1  = first aggregate  (header "20 M" or "20MM")  -> "20MM"
+  2  = SAND  -> "SAND"
+  3  = third aggregate (header "SAND 1" or "SAND 2") -> "SAND1"
+  4  = "12 MM" -> "12MM"
+  5  = unnamed column (header prints "0")  -> IGNORE
+  6  = first "CEMEN" column  -> "CEMENT1"
+  7  = second "CEMEN" column -> "CEMENT2"
+  8  = "FLY"  -> "FLYASH"
+  9  = unnamed column (no header) -> IGNORE
+  10 = WATER -> "WATER"
+  11 = MS / ICE -> "MS_ICE"
+  12 = ADMIX1 \
+  13 = ADMIX2 / -> add these two together and return the sum as "ADMIX" (do not output ADMIX1 or ADMIX2 separately)
+  14 = M.Fiber -> "M_FIBER"
+- If the third-aggregate header reads "SAND 2" in the report, still return it under the key "SAND1"
+- ADMIX = ADMIX1 + ADMIX2, rounded to 2 decimal places. One of them is usually 0.00 and the weight sits in the other
+- The row shows Total Actual values only. Never use values from the Variations row (these can be negative percentages)
+- Return 0 where the report prints 0 or 0.00. Use null only if the cell is truly unreadable
+
 FORMAT RULES:
 - Date: YYYY-MM-DD (31-Oct-2026 becomes 2026-10-31)
 - Time: 24-hour HH:MM:SS (02:52:03 PM becomes 14:52:03, 08:37:00 PM becomes 20:37:00)
