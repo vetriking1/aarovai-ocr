@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SERVER_URL = "http://localhost:3000/api/extract";
+const SERVER_URL = process.env.SERVER_URL || "http://localhost:3050/api/extract";
 const TEST_PDF_DIR = path.join(__dirname, "test_pdf");
 
 async function runPdfTests() {
